@@ -1,319 +1,284 @@
-import 'dart:io';
-import 'dart:async';
-
-import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:camera/camera.dart';
+import 'package:gallery_saver/gallery_saver.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
 
-// Conditional import for web camera implementation
-import 'src/web_camera_stub.dart'
-    if (dart.library.html) 'src/web_camera.dart';
-
-final List<CameraDescription> _availableCameras = [];
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-
-Future<void> main() async {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Global error handling to avoid uncaught exceptions breaking into the debugger
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('FlutterError: ${details.exceptionAsString()}');
-    _showErrorDialog(details.exceptionAsString());
-  };
+  // Obtener las cámaras disponibles
+  final cameras = await availableCameras();
+  final firstCamera = cameras.first;
 
-  await runZonedGuarded(() async {
-    if (!kIsWeb) {
-      try {
-        final cams = await availableCameras();
-        _availableCameras.addAll(cams);
-      } catch (e) {
-        debugPrint('availableCameras error: $e');
-      }
-    } else {
-      debugPrint('Running on web: camera initialization skipped.');
-    }
-    runApp(const MainApp());
-  }, (error, stack) {
-    debugPrint('Uncaught zone error: $error\n$stack');
-    _showErrorDialog(error.toString());
-  });
+  runApp(MyApp(camera: firstCamera));
 }
 
-void _showErrorDialog(String message) {
-  final ctx = navigatorKey.currentState?.context;
-  if (ctx != null) {
-    showDialog(
-      context: ctx,
-      builder: (_) => AlertDialog(
-        title: const Text('Unexpected error'),
-        content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK'))],
-      ),
-    );
-  } else {
-    debugPrint('Could not show dialog: $message');
-  }
-}
+class MyApp extends StatelessWidget {
+  final CameraDescription camera;
 
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
+  const MyApp({Key? key, required this.camera}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: navigatorKey,
-      home: const CameraHome(),
+      title: 'Camera App',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+      ),
+      home: CameraScreen(camera: camera),
     );
   }
 }
 
-class CameraHome extends StatefulWidget {
-  const CameraHome({super.key});
+class CameraScreen extends StatefulWidget {
+  final CameraDescription camera;
+
+  const CameraScreen({Key? key, required this.camera}) : super(key: key);
 
   @override
-  State<CameraHome> createState() => _CameraHomeState();
+  State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraHomeState extends State<CameraHome> with WidgetsBindingObserver {
-  CameraController? _controller;
-  final GlobalKey<WebCameraWidgetState> _webCamKey = GlobalKey<WebCameraWidgetState>();
-  String? _lastImagePath; // on web this will store a data URL
-  bool _initializing = true;
-  bool _busy = false;
-  String? _error;
+class _CameraScreenState extends State<CameraScreen> {
+  late CameraController _controller;
+  late Future<void> _initializeControllerFuture;
+  String? _lastImagePath;
+  int _photoCount = 0;
+  bool _isMobile = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _initCamera();
+    _detectPlatform();
+    _controller = CameraController(
+      widget.camera,
+      ResolutionPreset.high,
+    );
+    _initializeControllerFuture = _controller.initialize();
+    _requestPermissions();
+  }
+
+  void _detectPlatform() {
+    // Detectar si es móvil o escritorio
+    if (kIsWeb) {
+      _isMobile = false;
+    } else {
+      try {
+        _isMobile = Platform.isAndroid || Platform.isIOS;
+      } catch (e) {
+        _isMobile = false;
+      }
+    }
+  }
+
+  Future<void> _requestPermissions() async {
+    if (!kIsWeb) {
+      try {
+        // Solicitar permisos necesarios
+        await Permission.camera.request();
+
+        if (_isMobile) {
+          await Permission.storage.request();
+          // Para Android 13+ (API 33+)
+          if (await Permission.photos.isDenied) {
+            await Permission.photos.request();
+          }
+        }
+      } catch (e) {
+        print('Error al solicitar permisos: $e');
+      }
+    }
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _controller?.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final CameraController? controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-    if (state == AppLifecycleState.inactive) {
-      controller.dispose();
-    } else if (state == AppLifecycleState.resumed) {
-      _initCamera();
-    }
-  }
-
-  Future<void> _initCamera() async {
-    setState(() {
-      _initializing = true;
-      _error = null;
-    });
-
-    // If we're running on Web the permission_handler plugin and camera plugin
-    // may not be available/implemented in the same way — show a clear message.
-    if (kIsWeb) {
-      setState(() {
-        _error = 'Camera is not supported on Web in this build. Use a mobile device or enable Web camera support.';
-        _initializing = false;
-      });
-      return;
-    }
-
-    // Request camera permission and handle platforms where the permission plugin
-    // may not be implemented (MissingPluginException)
-    try {
-      final status = await Permission.camera.request();
-      if (!status.isGranted) {
-        setState(() {
-          _error = 'Camera permission denied.';
-          _initializing = false;
-        });
-        return;
-      }
-    } on MissingPluginException catch (e) {
-      setState(() {
-        _error = 'Permissions plugin not available on this platform: $e';
-        _initializing = false;
-      });
-      return;
-    } catch (e) {
-      setState(() {
-        _error = 'Error requesting camera permission: $e';
-        _initializing = false;
-      });
-      return;
-    }
-
-    if (_availableCameras.isEmpty) {
-      setState(() {
-        _error = 'No cameras available on this device.';
-        _initializing = false;
-      });
-      return;
-    }
-
-    // Prefer back camera when available
-    CameraDescription camera = _availableCameras.first;
-    for (final c in _availableCameras) {
-      if (c.lensDirection == CameraLensDirection.back) {
-        camera = c;
-        break;
-      }
-    }
-
-    _controller = CameraController(camera, ResolutionPreset.high, enableAudio: false);
-    try {
-      await _controller!.initialize();
-      setState(() {
-        _initializing = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = 'Camera initialization error: $e';
-        _initializing = false;
-      });
-    }
-  }
-
   Future<void> _takePicture() async {
-    setState(() => _busy = true);
     try {
-      if (kIsWeb) {
-        final dataUrl = await _webCamKey.currentState?.capture(triggerDownload: true);
-        if (dataUrl == null) throw Exception('Failed to capture from web camera.');
-        setState(() => _lastImagePath = dataUrl);
-        await _showAlert('Image captured', 'Image captured and downloaded.');
-        return;
+      await _initializeControllerFuture;
+
+      // Tomar la foto
+      final XFile image = await _controller.takePicture();
+
+      String savedLocation = '';
+
+      // Guardar según la plataforma
+      if (_isMobile) {
+        // Guardar en la galería (móvil)
+        final bool? result = await GallerySaver.saveImage(
+          image.path,
+          albumName: 'CameraApp',
+        );
+
+        if (result == true) {
+          savedLocation = 'Galería (álbum: CameraApp)';
+          _photoCount++;
+        } else {
+          throw Exception('No se pudo guardar en la galería');
+        }
+      } else {
+        // Para escritorio (Windows, macOS, Linux)
+        try {
+          final String downloadsPath = _getDownloadsPath();
+          final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+          final String fileName = 'camera_shot_$timestamp.jpg';
+          final String filePath = '$downloadsPath${Platform.pathSeparator}$fileName';
+
+          await File(image.path).copy(filePath);
+          savedLocation = filePath;
+          _photoCount++;
+        } catch (e) {
+          // Si falla, guardar en la ubicación temporal
+          savedLocation = image.path;
+          _photoCount++;
+        }
       }
 
-      if (_controller == null || !_controller!.value.isInitialized) return;
+      setState(() {
+        _lastImagePath = image.path;
+      });
 
-      final XFile file = await _controller!.takePicture();
-
-      final appDir = await getApplicationDocumentsDirectory();
-      final picturesDir = Directory('${appDir.path}/Pictures');
-      if (!await picturesDir.exists()) await picturesDir.create(recursive: true);
-
-      final filename = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final saved = await File(file.path).copy('${picturesDir.path}/$filename');
-
-      setState(() => _lastImagePath = saved.path);
-
-      await _showAlert('Image saved', 'Image saved to:\n${saved.path}');
+      // Mostrar mensaje de confirmación
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Foto guardada en: $savedLocation'),
+            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.green,
+            action: SnackBarAction(
+              label: 'OK',
+              textColor: Colors.white,
+              onPressed: () {},
+            ),
+          ),
+        );
+      }
     } catch (e) {
-      debugPrint('takePicture error: $e');
-      await _showAlert('Error', e.toString());
-    } finally {
-      setState(() => _busy = false);
+      print('Error al tomar la foto: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     }
   }
 
-  Future<void> _showAlert(String title, String message) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(message),
-            if (_lastImagePath != null) ...[
-              const SizedBox(height: 12),
-              Image.file(File(_lastImagePath!), height: 150),
-            ]
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
-        ],
-      ),
-    );
+  String _getDownloadsPath() {
+    try {
+      if (Platform.isWindows) {
+        final String? userProfile = Platform.environment['USERPROFILE'];
+        return userProfile != null ? '$userProfile\\Downloads' : '';
+      } else if (Platform.isMacOS || Platform.isLinux) {
+        final String? home = Platform.environment['HOME'];
+        return home != null ? '$home/Downloads' : '';
+      }
+    } catch (e) {
+      print('Error al obtener ruta de descargas: $e');
+    }
+    return '';
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Live Camera Preview')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            children: [
-              Expanded(
-                child: _initializing
-                    ? const Center(child: CircularProgressIndicator())
-                    : _error != null
-                        ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
-                        : kIsWeb
-                            ? WebCameraWidget(key: _webCamKey)
-                            : AspectRatio(
-                                aspectRatio: _controller!.value.aspectRatio,
-                                child: CameraPreview(_controller!),
-                              ),
+      appBar: AppBar(
+        title: const Text('Camera App'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          if (_photoCount > 0)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 16.0),
+                child: Text(
+                  'Fotos: $_photoCount',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
-              if (_lastImagePath != null) ...[
-                const SizedBox(height: 8),
-                kIsWeb
-                    ? Image.network(_lastImagePath!, height: 120)
-                    : Image.file(File(_lastImagePath!), height: 120),
-                const SizedBox(height: 8),
-                Text(kIsWeb ? 'Captured (downloaded)' : 'Saved: ${_lastImagePath!}', textAlign: TextAlign.center),
+            ),
+        ],
+      ),
+      body: FutureBuilder<void>(
+        future: _initializeControllerFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.done) {
+            return Column(
+              children: [
+                Expanded(
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: _controller.value.aspectRatio,
+                      child: CameraPreview(_controller),
+                    ),
+                  ),
+                ),
+                Container(
+                  color: Colors.black87,
+                  padding: const EdgeInsets.all(20.0),
+                  child: Column(
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _takePicture,
+                        icon: const Icon(Icons.camera_alt, size: 28),
+                        label: const Text(
+                          'Camera Shot',
+                          style: TextStyle(fontSize: 18),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 16,
+                          ),
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _isMobile
+                            ? 'Las fotos se guardan en la Galería'
+                            : 'Las fotos se guardan en Descargas',
+                        style: TextStyle(
+                          color: Colors.grey[400],
+                          fontSize: 12,
+                        ),
+                      ),
+                      if (_lastImagePath != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4.0),
+                          child: Text(
+                            '✓ Última foto guardada correctamente',
+                            style: TextStyle(
+                              color: Colors.green[300],
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ],
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.camera_alt),
-                    label: _busy ? const Text('Capturing...') : const Text('Capture'),
-                    onPressed: (_busy || _initializing || _controller == null || !_controller!.value.isInitialized) ? null : _takePicture,
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.switch_camera),
-                    label: const Text('Switch'),
-                    onPressed: (_availableCameras.length < 2 || _initializing) ? null : _switchCamera,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-            ],
-          ),
-        ),
+            );
+          } else {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
+        },
       ),
     );
-  }
-
-  Future<void> _switchCamera() async {
-    if (_availableCameras.length < 2) return;
-    final current = _controller!.description;
-    CameraDescription? next;
-    for (final c in _availableCameras) {
-      if (c.name != current.name) {
-        next = c;
-        break;
-      }
-    }
-    if (next == null) return;
-
-    setState(() => _initializing = true);
-    await _controller?.dispose();
-    _controller = CameraController(next, ResolutionPreset.high, enableAudio: false);
-    try {
-      await _controller!.initialize();
-    } catch (e) {
-      setState(() => _error = 'Failed switching camera: $e');
-    }
-    setState(() => _initializing = false);
   }
 }
