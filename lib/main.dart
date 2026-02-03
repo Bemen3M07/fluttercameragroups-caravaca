@@ -8,6 +8,10 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+// Conditional import for web camera implementation
+import 'src/web_camera_stub.dart'
+    if (dart.library.html) 'src/web_camera.dart';
+
 final List<CameraDescription> _availableCameras = [];
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -76,7 +80,8 @@ class CameraHome extends StatefulWidget {
 
 class _CameraHomeState extends State<CameraHome> with WidgetsBindingObserver {
   CameraController? _controller;
-  String? _lastImagePath;
+  final GlobalKey<WebCameraWidgetState> _webCamKey = GlobalKey<WebCameraWidgetState>();
+  String? _lastImagePath; // on web this will store a data URL
   bool _initializing = true;
   bool _busy = false;
   String? _error;
@@ -179,9 +184,18 @@ class _CameraHomeState extends State<CameraHome> with WidgetsBindingObserver {
   }
 
   Future<void> _takePicture() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
     setState(() => _busy = true);
     try {
+      if (kIsWeb) {
+        final dataUrl = await _webCamKey.currentState?.capture(triggerDownload: true);
+        if (dataUrl == null) throw Exception('Failed to capture from web camera.');
+        setState(() => _lastImagePath = dataUrl);
+        await _showAlert('Image captured', 'Image captured and downloaded.');
+        return;
+      }
+
+      if (_controller == null || !_controller!.value.isInitialized) return;
+
       final XFile file = await _controller!.takePicture();
 
       final appDir = await getApplicationDocumentsDirectory();
@@ -240,16 +254,20 @@ class _CameraHomeState extends State<CameraHome> with WidgetsBindingObserver {
                     ? const Center(child: CircularProgressIndicator())
                     : _error != null
                         ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
-                        : AspectRatio(
-                            aspectRatio: _controller!.value.aspectRatio,
-                            child: CameraPreview(_controller!),
-                          ),
+                        : kIsWeb
+                            ? WebCameraWidget(key: _webCamKey)
+                            : AspectRatio(
+                                aspectRatio: _controller!.value.aspectRatio,
+                                child: CameraPreview(_controller!),
+                              ),
               ),
               if (_lastImagePath != null) ...[
                 const SizedBox(height: 8),
-                Image.file(File(_lastImagePath!), height: 120),
+                kIsWeb
+                    ? Image.network(_lastImagePath!, height: 120)
+                    : Image.file(File(_lastImagePath!), height: 120),
                 const SizedBox(height: 8),
-                Text('Saved: ${_lastImagePath!}', textAlign: TextAlign.center),
+                Text(kIsWeb ? 'Captured (downloaded)' : 'Saved: ${_lastImagePath!}', textAlign: TextAlign.center),
               ],
               const SizedBox(height: 8),
               Row(
