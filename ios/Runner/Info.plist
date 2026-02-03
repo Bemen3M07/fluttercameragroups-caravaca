@@ -28,6 +28,9 @@
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+	<!-- Camera usage description shown when requesting access -->
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs access to the camera to take photos.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

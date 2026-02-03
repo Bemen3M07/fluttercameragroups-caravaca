@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Permission required to use the device camera -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="empty"
         android:name="${applicationName}"
