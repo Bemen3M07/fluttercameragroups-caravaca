@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -111,10 +112,36 @@ class _CameraHomeState extends State<CameraHome> with WidgetsBindingObserver {
       _error = null;
     });
 
-    final status = await Permission.camera.request();
-    if (!status.isGranted) {
+    // If we're running on Web the permission_handler plugin and camera plugin
+    // may not be available/implemented in the same way — show a clear message.
+    if (kIsWeb) {
       setState(() {
-        _error = 'Camera permission denied.';
+        _error = 'Camera is not supported on Web in this build. Use a mobile device or enable Web camera support.';
+        _initializing = false;
+      });
+      return;
+    }
+
+    // Request camera permission and handle platforms where the permission plugin
+    // may not be implemented (MissingPluginException)
+    try {
+      final status = await Permission.camera.request();
+      if (!status.isGranted) {
+        setState(() {
+          _error = 'Camera permission denied.';
+          _initializing = false;
+        });
+        return;
+      }
+    } on MissingPluginException catch (e) {
+      setState(() {
+        _error = 'Permissions plugin not available on this platform: $e';
+        _initializing = false;
+      });
+      return;
+    } catch (e) {
+      setState(() {
+        _error = 'Error requesting camera permission: $e';
         _initializing = false;
       });
       return;
