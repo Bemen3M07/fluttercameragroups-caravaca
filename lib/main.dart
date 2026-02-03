@@ -1,7 +1,57 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
+import 'dart:async';
 
-void main() {
-  runApp(const MainApp());
+import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+final List<CameraDescription> _availableCameras = [];
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Global error handling to avoid uncaught exceptions breaking into the debugger
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('FlutterError: ${details.exceptionAsString()}');
+    _showErrorDialog(details.exceptionAsString());
+  };
+
+  await runZonedGuarded(() async {
+    if (!kIsWeb) {
+      try {
+        final cams = await availableCameras();
+        _availableCameras.addAll(cams);
+      } catch (e) {
+        debugPrint('availableCameras error: $e');
+      }
+    } else {
+      debugPrint('Running on web: camera initialization skipped.');
+    }
+    runApp(const MainApp());
+  }, (error, stack) {
+    debugPrint('Uncaught zone error: $error\n$stack');
+    _showErrorDialog(error.toString());
+  });
+}
+
+void _showErrorDialog(String message) {
+  final ctx = navigatorKey.currentState?.context;
+  if (ctx != null) {
+    showDialog(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        title: const Text('Unexpected error'),
+        content: Text(message),
+        actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK'))],
+      ),
+    );
+  } else {
+    debugPrint('Could not show dialog: $message');
+  }
 }
 
 class MainApp extends StatelessWidget {
@@ -9,12 +59,216 @@ class MainApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: Scaffold(
-        body: Center(
-          child: Text('Hello World!'),
+    return MaterialApp(
+      navigatorKey: navigatorKey,
+      home: const CameraHome(),
+    );
+  }
+}
+
+class CameraHome extends StatefulWidget {
+  const CameraHome({super.key});
+
+  @override
+  State<CameraHome> createState() => _CameraHomeState();
+}
+
+class _CameraHomeState extends State<CameraHome> with WidgetsBindingObserver {
+  CameraController? _controller;
+  String? _lastImagePath;
+  bool _initializing = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initCamera();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (state == AppLifecycleState.inactive) {
+      controller.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initCamera();
+    }
+  }
+
+  Future<void> _initCamera() async {
+    setState(() {
+      _initializing = true;
+      _error = null;
+    });
+
+    final status = await Permission.camera.request();
+    if (!status.isGranted) {
+      setState(() {
+        _error = 'Camera permission denied.';
+        _initializing = false;
+      });
+      return;
+    }
+
+    if (_availableCameras.isEmpty) {
+      setState(() {
+        _error = 'No cameras available on this device.';
+        _initializing = false;
+      });
+      return;
+    }
+
+    // Prefer back camera when available
+    CameraDescription camera = _availableCameras.first;
+    for (final c in _availableCameras) {
+      if (c.lensDirection == CameraLensDirection.back) {
+        camera = c;
+        break;
+      }
+    }
+
+    _controller = CameraController(camera, ResolutionPreset.high, enableAudio: false);
+    try {
+      await _controller!.initialize();
+      setState(() {
+        _initializing = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = 'Camera initialization error: $e';
+        _initializing = false;
+      });
+    }
+  }
+
+  Future<void> _takePicture() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    setState(() => _busy = true);
+    try {
+      final XFile file = await _controller!.takePicture();
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final picturesDir = Directory('${appDir.path}/Pictures');
+      if (!await picturesDir.exists()) await picturesDir.create(recursive: true);
+
+      final filename = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final saved = await File(file.path).copy('${picturesDir.path}/$filename');
+
+      setState(() => _lastImagePath = saved.path);
+
+      await _showAlert('Image saved', 'Image saved to:\n${saved.path}');
+    } catch (e) {
+      debugPrint('takePicture error: $e');
+      await _showAlert('Error', e.toString());
+    } finally {
+      setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showAlert(String title, String message) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(message),
+            if (_lastImagePath != null) ...[
+              const SizedBox(height: 12),
+              Image.file(File(_lastImagePath!), height: 150),
+            ]
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Live Camera Preview')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Column(
+            children: [
+              Expanded(
+                child: _initializing
+                    ? const Center(child: CircularProgressIndicator())
+                    : _error != null
+                        ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
+                        : AspectRatio(
+                            aspectRatio: _controller!.value.aspectRatio,
+                            child: CameraPreview(_controller!),
+                          ),
+              ),
+              if (_lastImagePath != null) ...[
+                const SizedBox(height: 8),
+                Image.file(File(_lastImagePath!), height: 120),
+                const SizedBox(height: 8),
+                Text('Saved: ${_lastImagePath!}', textAlign: TextAlign.center),
+              ],
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.camera_alt),
+                    label: _busy ? const Text('Capturing...') : const Text('Capture'),
+                    onPressed: (_busy || _initializing || _controller == null || !_controller!.value.isInitialized) ? null : _takePicture,
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.switch_camera),
+                    label: const Text('Switch'),
+                    onPressed: (_availableCameras.length < 2 || _initializing) ? null : _switchCamera,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  Future<void> _switchCamera() async {
+    if (_availableCameras.length < 2) return;
+    final current = _controller!.description;
+    CameraDescription? next;
+    for (final c in _availableCameras) {
+      if (c.name != current.name) {
+        next = c;
+        break;
+      }
+    }
+    if (next == null) return;
+
+    setState(() => _initializing = true);
+    await _controller?.dispose();
+    _controller = CameraController(next, ResolutionPreset.high, enableAudio: false);
+    try {
+      await _controller!.initialize();
+    } catch (e) {
+      setState(() => _error = 'Failed switching camera: $e');
+    }
+    setState(() => _initializing = false);
   }
 }

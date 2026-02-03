@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  camera: ^0.10.0
   image_picker: ^0.8.7+5
   path_provider: ^2.0.15
   permission_handler: ^10.4.1
