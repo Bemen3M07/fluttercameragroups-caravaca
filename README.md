@@ -1,3 +1,30 @@
+Prompt para la parte de ejercicios 1 y 2 - Cámara e imágenes:
+
+Hazme una aplicación en Flutter y Dart que permita al usuario capturar imágenes mediante
+la cámara del dispositivo. Cada vez que se capture una imagen, se debe mostrar un mensaje
+de confirmación indicando dónde se ha guardado. La aplicación debe detectar si se está
+ejecutando en un dispositivo móvil o en escritorio, y en móvil guardar las fotos en la
+galería del teléfono (en un álbum llamado "CameraApp"), y en escritorio guardarlas en la
+carpeta de Descargas. Debe solicitar los permisos necesarios de cámara y almacenamiento de
+forma automática al iniciar. Usa las librerías camera, gal y permission_handler. La
+interfaz debe mostrar el preview de la cámara en tiempo real, un botón para disparar la
+foto, y un contador de fotos tomadas en la barra superior.
+
+Prompt para tu parte ejercicios 3 y 4 - Navegación, foto y reproductor de música:
+
+Partiendo de una aplicación Flutter que ya tiene una pantalla de cámara funcional,
+necesito ampliarla con lo siguiente: Añade una barra de navegación inferior con tres
+pestañas: Càmera, Foto y Música. La navigation bar superior debe cambiar el título según
+la pantalla activa. La pantalla de Foto debe mostrar la última imagen capturada desde la
+cámara, y tener un menú desplegable con una opción "Informació de la foto" que muestre el
+nombre y la ruta del archivo en un diálogo. Si no hay foto, debe mostrar un placeholder.
+La pantalla de Música debe ser un reproductor de audio que cargue un mp3 desde los assets,
+con botones de play/pause, stop, avanzar y retroceder 10 segundos, una barra de progreso
+interactiva que permita posicionarse en cualquier punto del audio, indicador de tiempo
+actual y total, y un menú desplegable para cambiar la velocidad de reproducción (0.5x, 1x,
+1.5x, 2x). Usa las librerías audioplayers y path_provider.
+
+
 # Camera App - Aplicación Flutter
 
 Aplicación Flutter que muestra la cámara en tiempo real y permite tomar capturas de pantalla.
