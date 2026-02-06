@@ -8,6 +8,20 @@ allprojects {
 rootProject.buildDir = "../build"
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
+    afterEvaluate { project ->
+        if (project.plugins.hasPlugin("com.android.library")) {
+            project.android {
+                if (namespace == null || namespace.isEmpty()) {
+                    namespace = project.group.toString()
+                }
+            }
+        }
+        project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                jvmTarget = "1.8"
+            }
+        }
+    }
 }
 subprojects {
     project.evaluationDependsOn(":app")
