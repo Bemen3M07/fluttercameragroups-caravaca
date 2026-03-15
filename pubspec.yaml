@@ -26,3 +26,9 @@ flutter:
 
   assets:
     - assets/audio/
+
+web:
+  sound_source_url_mapping:
+    - pattern: 'audio/.*'
+      base_url: 'assets/'
+

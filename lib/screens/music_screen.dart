@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 class MusicScreen extends StatefulWidget {
   final String title;
@@ -64,7 +65,12 @@ class _MusicScreenState extends State<MusicScreen> {
   // Carrega l'àudio des dels assets
   Future<void> _loadAudio() async {
     try {
-      await _audioPlayer.setSource(AssetSource('audio/sample.mp3'));
+      // En web, usem UrlSource; en altres plataformes usem AssetSource
+      if (kIsWeb) {
+        await _audioPlayer.setSource(UrlSource('assets/audio/sample.mp3'));
+      } else {
+        await _audioPlayer.setSource(AssetSource('audio/sample.mp3'));
+      }
     } catch (e) {
       debugPrint('Error al carregar l\'àudio: $e');
     }
@@ -76,7 +82,7 @@ class _MusicScreenState extends State<MusicScreen> {
       if (_isPlaying) {
         await _audioPlayer.pause();
       } else {
-        await _audioPlayer.resume();
+        await _audioPlayer.play(UrlSource('assets/audio/sample.mp3'));
       }
     } catch (e) {
       debugPrint('Error al reproduir/pausar: $e');
